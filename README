@@ -1,0 +1,24 @@
+
+dr_meter is dynamic range meter. In short, it measures how much does the amplitude of music change.
+dr_meter is attempt to create open-source, non-GUI, format-agnostic and OS-agnostic dynamic range meter,
+whose results will be compatible with TT DR Offline Meter's.
+
+
+What can I do with it?
+Read the LICENSE.
+
+
+How to use it?
+$ make
+then pipe raw stereo signed 16-bit little-endian 44100Hz data into it, for example:
+$ flac -scd /your/favourite/music.flac | ./dr_meter
+
+
+Why to use it?
+To fight overcompression. Interesting links about loudness wars:
+ * http://en.wikipedia.org/wiki/Loudness_war
+ * http://turnmeup.org/
+ * http://justiceforaudio.org/
+ * http://www.pleasurizemusic.com/
+ * http://dr.loudness-war.info/
+
