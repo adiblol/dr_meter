@@ -4,7 +4,7 @@
 #include <stdlib.h>
 
 #define MAX_CHANNELS 2
-#define BUFFSIZE (44100*3) // 3 seconds
+#define BUFFSIZE (44100*6) // 3 seconds * 2 channels
 #define MAX_RMS_VALUES 32768 // more than 24h
 
 typedef long double sample;
@@ -50,7 +50,7 @@ int main(int argc, char** argv) {
 		}
 		rms_i++;
 		if ((throbbler_stage%4)==0) {
-			fprintf(stderr, "\033[1K\033[1G %c  %2i:%02i ", throbbler[throbbler_stage/4], (rms_i*3/2)/60, (rms_i*3/2)%60);
+			fprintf(stderr, "\033[1K\033[1G %c  %2i:%02i ", throbbler[throbbler_stage/4], (rms_i*3)/60, (rms_i*3)%60);
 		}
 		throbbler_stage += 1;
 		throbbler_stage %= 16;
