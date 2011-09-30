@@ -62,11 +62,12 @@ int main(int argc, char** argv) {
 	for (uint8_t ch=0;ch<chan_num;ch++) {
 		qsort(rms_values[ch], rms_i, sizeof(sample), compare_samples);
 		sample rms_sum = 0;
-		int values_to_use = 20;
+		int values_to_use = rms_i/5;
+		/*int values_to_use = 20;
 		if (rms_i<values_to_use) {
 			values_to_use = rms_i;
 			fprintf(stderr, "NOTICE: rms_i = %i < values_to_use\n", rms_i);
-		}
+		}*/
 		for (size_t i=0;i<values_to_use;i++) {
 			rms_sum += rms_values[ch][i];
 		}
