@@ -7,7 +7,7 @@ LIBS =  -L"/usr/lib"
 INCS =  -I"/usr/include"
 CXXINCS =  $(INCS)
 BIN  = dr_meter
-CXXFLAGS = $(CXXINCS) -O0 -ggdb
+CXXFLAGS = $(CXXINCS) -O3 -ggdb
 CFLAGS = $(INCS) -O3 -ggdb
 SOURCE = main.cpp
 OBJECTS = $(SOURCES:.cpp=.o)
