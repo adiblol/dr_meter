@@ -1,4 +1,4 @@
-#include <cstdio>
+#include <stdio.h>
 #include <stdint.h>
 #include <math.h>
 #include <stdlib.h>
@@ -13,9 +13,9 @@ typedef long double sample;
 
 const char throbbler[5] = "/-\\|";
 
-sample *rms_values[MAX_CHANNELS];
+sample rms_values[MAX_CHANNELS][MAX_FRAGMENTS];
 #ifndef USE_GLOBAL_PEAK
-sample *peak_values[MAX_CHANNELS];
+sample peak_values[MAX_CHANNELS][MAX_FRAGMENTS];
 #endif
 uint8_t current_channel;
 
@@ -35,15 +35,8 @@ sample to_db(const sample linear) {
 int main(int argc, char** argv) {
 	FILE* f_in = stdin;
 
-	for (uint8_t i=0;i<MAX_CHANNELS;i++) {
-		rms_values[i] = new sample[MAX_FRAGMENTS];
-#ifndef USE_GLOBAL_PEAK
-		peak_values[i] = new sample[MAX_FRAGMENTS];
-		for (size_t j=0;j<MAX_FRAGMENTS;j++) peak_values[i][j] = 0;
-#endif
-	}
 	const uint8_t chan_num = 2;
-	int16_t *buff = new int16_t[BUFFSIZE];
+	int16_t buff[BUFFSIZE];
 	uint8_t ch = 0;
 	size_t fragment = 0;
 #ifdef USE_GLOBAL_PEAK
@@ -88,10 +81,9 @@ int main(int argc, char** argv) {
 	sample peak_score[MAX_CHANNELS];
 #endif
 	sample dr_channel[MAX_CHANNELS];
-	size_t *fragments[MAX_CHANNELS];
+	size_t fragments[MAX_CHANNELS][fragment];
 	sample dr_sum = 0;
 	for (uint8_t ch=0;ch<chan_num;ch++) {
-		fragments[ch] = new size_t[fragment];
 		for (size_t i=0;i<fragment;i++) fragments[ch][i] = i;
 		current_channel = ch;
 		qsort(fragments[ch], fragment, sizeof(size_t), compare_fragments);

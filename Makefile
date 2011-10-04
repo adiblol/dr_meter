@@ -1,31 +1,22 @@
 
-CPP  = g++
-CC   = gcc
 OBJ  = main.o
 LINKOBJ  = $(OBJ)
-LIBS =  -L"/usr/lib"
-INCS =  -I"/usr/include"
-CXXINCS =  $(INCS)
 BIN  = dr_meter
-CXXFLAGS = $(CXXINCS) -O3 -ggdb
-CFLAGS = $(INCS) -O3 -ggdb
-SOURCE = main.cpp
-OBJECTS = $(SOURCES:.cpp=.o)
+CFLAGS = -O3 -ggdb -std=gnu99
+LDLIBS = -lm
+SOURCES = main.c
+OBJECTS = $(SOURCES:.c=.o)
 
 
-.PHONY: all clean build run
+.PHONY: all clean build
 
 build: $(BIN)
 
 clean:
 	rm -f $(OBJ) $(BIN)
 
-$(BIN): $(OBJ)
-	$(CPP) $(LINKOBJ) -o $(BIN) $(LIBS)
+$(BIN): $(OBJ) Makefile
+	$(CC) $(LDFLAGS) $< -o $@ $(LDLIBS)
 
-main.o: main.cpp $(SOURCE)
-	$(CPP) -c main.cpp -o main.o $(CXXFLAGS)
-
-run: $(BIN)
-	./$(BIN)
+main.o: main.c Makefile
 
