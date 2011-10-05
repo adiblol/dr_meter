@@ -9,7 +9,7 @@
 
 #define USE_GLOBAL_PEAK
 
-typedef long double sample;
+typedef double sample;
 
 const char throbbler[5] = "/-\\|";
 
@@ -28,7 +28,7 @@ int compare_fragments(const void *s1, const void *s2) {
 }
 
 sample to_db(const sample linear) {
-	return 20.0l * logl(linear) / M_LN10;
+	return 20.0 * log10(linear);
 }
 
 int main(int argc, char** argv) {
@@ -54,7 +54,7 @@ int main(int argc, char** argv) {
 		sample sum[MAX_CHANNELS];
 		for (size_t i = 0; i < chan_num; i++) sum[i] = 0;
 		for (size_t i = 0; i < values_read; i++) {
-			sample value = (sample)buff[i] / 32768.0l;
+			sample value = (sample)buff[i] / 32768.0;
 			sum[ch] += value * value;
 #ifdef USE_GLOBAL_PEAK
 			if (peak[ch] < value) peak[ch] = value;
@@ -65,7 +65,7 @@ int main(int argc, char** argv) {
 			ch %= chan_num;
 		}
 		for (ch = 0; ch < chan_num; ch++) {
-			rms_values[ch][fragment] = sqrtl(sum[ch] / ((sample)(values_read / chan_num)));
+			rms_values[ch][fragment] = sqrt(sum[ch] / ((sample)(values_read / chan_num)));
 		}
 		fragment++;
 		if ((throbbler_stage % 4) == 0) {
@@ -94,31 +94,25 @@ int main(int argc, char** argv) {
 		sample peak_sum = 0;
 #endif
 		int values_to_use = fragment / 5;
-		/*int values_to_use = 20;
-		if (rms_i < values_to_use) {
-			values_to_use = rms_i;
-			fprintf(stderr, "NOTICE: rms_i = %i < values_to_use\n", rms_i);
-		}*/
 		for (size_t i = 0; i < values_to_use; i++) {
 			rms_sum += rms_values[ch][fragments[ch][i]];
 #ifndef USE_GLOBAL_PEAK
 			peak_sum += peak_values[ch][fragments[ch][i]];
 #endif
-//			fprintf(stderr, "DEBUG: %i: fragment #%i: Peak %8.2Lf, RMS %8.2Lf\n", i, fragments[ch][i], peak_values[ch][fragments[ch][i]], rms_values[ch][fragments[ch][i]]);
+//			fprintf(stderr, "DEBUG: %i: fragment #%i: Peak %8.2f, RMS %8.2f\n", i, fragments[ch][i], peak_values[ch][fragments[ch][i]], rms_values[ch][fragments[ch][i]]);
 		}
 		rms_score[ch] = rms_sum / values_to_use;
 #ifndef USE_GLOBAL_PEAK
 		peak_score[ch] = peak_sum / values_to_use;
-		//dr_channel[ch] = to_db(peak_score[ch]) - to_db(rms_score[ch]);
 		dr_channel[ch] = to_db(peak_score[ch] / rms_score[ch]);
-		printf("Ch. %i:  Peak %8.2Lf    RMS %8.2Lf    DR = %6.2Lf\n",
+		printf("Ch. %i:  Peak %8.2f    RMS %8.2f    DR = %6.2f\n",
 		       ch,
 		       to_db(peak_score[ch]),
 		       to_db(rms_score[ch]),
 		       dr_channel[ch]);
 #else
 		dr_channel[ch] = to_db(peak[ch] / rms_score[ch]);
-		printf("Ch. %i:  Peak %8.2Lf    RMS %8.2Lf    DR = %6.2Lf\n",
+		printf("Ch. %i:  Peak %8.2f    RMS %8.2f    DR = %6.2f\n",
 		       ch,
 		       to_db(peak[ch]),
 		       to_db(rms_score[ch]),
@@ -127,7 +121,7 @@ int main(int argc, char** argv) {
 		dr_sum += dr_channel[ch];
 	}
 	printf("Overall dynamic range: DR%i\n",
-	       (int)roundl(dr_sum / ((sample)chan_num)));
+	       (int)round(dr_sum / ((sample)chan_num)));
 	return 0;
 }
 
