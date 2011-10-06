@@ -276,7 +276,7 @@ int main(int argc, char** argv) {
 			ch %= chan_num;
 		}
 		for (ch = 0; ch < chan_num; ch++) {
-			rms_values[ch][fragment] = sqrt(sum[ch] / ((sample)(values_read / chan_num)));
+			rms_values[ch][fragment] = sqrt(2.0 * sum[ch] / ((sample)(values_read / chan_num)));
 		}
 		fragment++;
 		if ((throbbler_stage % 4) == 0) {
