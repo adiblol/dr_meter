@@ -10,8 +10,7 @@ Read the LICENSE.
 
 How to use it?
 $ make
-then pipe raw stereo signed 16-bit little-endian 44100Hz data into it, for example:
-$ flac -scd /your/favourite/music.flac | ./dr_meter
+$ ./dr_meter /your/favourite/music.flac
 
 
 Why to use it?
