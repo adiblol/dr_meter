@@ -267,6 +267,7 @@ int main(int argc, char** argv) {
 		for (size_t i = 0; i < values_read; i++) {
 			sample value = (sample)buff[i] / 32768.0;
 			sum[ch] += value * value;
+			value = fabs(value);
 #ifdef USE_GLOBAL_PEAK
 			if (peak[ch] < value) peak[ch] = value;
 #else
