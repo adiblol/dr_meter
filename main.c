@@ -308,13 +308,14 @@ int main(int argc, char** argv) {
 #endif
 		size_t values_to_use = fragment / 5;
 		for (size_t i = 0; i < values_to_use; i++) {
-			rms_sum += rms_values[ch][fragments[ch][i]];
+			sample value = rms_values[ch][fragments[ch][i]];
+			rms_sum += value * value;
 #ifndef USE_GLOBAL_PEAK
 			peak_sum += peak_values[ch][fragments[ch][i]];
 #endif
 //			fprintf(stderr, "DEBUG: %i: fragment #%i: Peak %8.2f, RMS %8.2f\n", i, fragments[ch][i], peak_values[ch][fragments[ch][i]], rms_values[ch][fragments[ch][i]]);
 		}
-		rms_score[ch] = rms_sum / values_to_use;
+		rms_score[ch] = sqrt(rms_sum / values_to_use);
 #ifndef USE_GLOBAL_PEAK
 		peak_score[ch] = peak_sum / values_to_use;
 		dr_channel[ch] = to_db(peak_score[ch] / rms_score[ch]);
