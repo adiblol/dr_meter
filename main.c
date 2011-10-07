@@ -109,6 +109,23 @@ int sc_start_stream(struct stream_context *self, int stream_index) {
 	if (codec == NULL) {
 		return AVERROR_DECODER_NOT_FOUND;
 	}
+
+	// Allocate a buffer.
+	size_t buf_size = AVCODEC_MAX_AUDIO_FRAME_SIZE;
+	if (self->buf_alloc_size < buf_size) {
+		av_free(self->buf);
+		// NOTE: the buffer MUST be allocated with av_malloc;
+		// ffmpeg has some very strict alignment requirements.
+		self->buf = av_malloc(buf_size);
+		self->buf_size = 0;
+		self->buf_alloc_size = buf_size;
+		self->pos = self->buf;
+		self->remaining = 0;
+	}
+	if (self->buf == NULL) {
+		return AVERROR(ENOMEM);
+	}
+
 	/* XXX check codec */
 	return avcodec_open(ctx, codec);
 }
@@ -140,20 +157,6 @@ int sc_refill(struct stream_context *self) {
 
 	AVCodecContext *codec_ctx = sc_get_codec(self);
 
-	// Allocate a buffer.
-	size_t buf_size = self->pkt.size * av_get_bytes_per_sample(codec_ctx->sample_fmt);
-	buf_size = FFMAX3(buf_size, FF_MIN_BUFFER_SIZE, AVCODEC_MAX_AUDIO_FRAME_SIZE);
-
-	if (self->buf_alloc_size < buf_size) {
-		self->buf = realloc(self->buf, buf_size);
-		self->buf_size = buf_size;
-		self->buf_alloc_size = buf_size;
-		self->remaining = 0;
-	}
-	if (self->buf == NULL) {
-		return AVERROR(ENOMEM);
-	}
-
 	// Decode the audio.
 
 	// The third parameter gives the size of the output buffer, and is set
@@ -161,17 +164,18 @@ int sc_refill(struct stream_context *self) {
 	// The return value is the number of bytes read from the packet.
 	// The codec is not required to read the entire packet, so we may need
 	// to keep it around for a while.
-	int buf_size_out = buf_size;
-	err = avcodec_decode_audio3(codec_ctx, self->buf, &buf_size_out, &self->pkt);
+	int buf_size = self->buf_alloc_size;
+	err = avcodec_decode_audio3(codec_ctx, self->buf, &buf_size, &self->pkt);
 	if (err < 0) { return err; }
-	size_t bytes_used = (size_t)err;
+	int bytes_used = err;
+
+	self->buf_size = buf_size;
 
 	self->pos = self->buf;
-	self->buf_size = buf_size_out;
-	self->remaining = buf_size_out;
+	self->remaining = buf_size;
 
 	if (self->state == STATE_VALID_PACKET) {
-		if (0 < bytes_used && (signed)bytes_used < self->pkt.size) {
+		if (0 < bytes_used && bytes_used < self->pkt.size) {
 			self->pkt.data += bytes_used;
 			self->pkt.size -= bytes_used;
 		} else  {
@@ -202,11 +206,13 @@ ssize_t sc_read(struct stream_context *self, void *buf, size_t buf_size) {
 
 		read_size = FFMIN(self->remaining, buf_size);
 		//printf("%d, %d, %d\n", read_size, buf_size, self->pkt.size);
-		memmove(buf, self->pos, read_size);
-		self->pos += read_size;
-		self->remaining -= read_size;
-		buf += read_size;
-		buf_size -= read_size;
+		if (read_size) {
+			memmove(buf, self->pos, read_size);
+			self->pos += read_size;
+			self->remaining -= read_size;
+			buf += read_size;
+			buf_size -= read_size;
+		}
 	}
 
 	// return the number of bytes copied
