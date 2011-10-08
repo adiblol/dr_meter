@@ -288,6 +288,7 @@ int main(int argc, char** argv) {
 
 	fprintf(stderr, "\nDoing some statistics...\n");
 	sample rms_score[MAX_CHANNELS];
+	sample rms[MAX_CHANNELS];
 	sample peak_score[MAX_CHANNELS];
 	sample dr_channel[MAX_CHANNELS];
 	sample dr_sum = 0;
@@ -301,13 +302,22 @@ int main(int argc, char** argv) {
 		}
 		rms_score[ch] = sqrt(rms_sum / values_to_use);
 
+		rms_sum = 0;
+		for (size_t i = 0; i < fragment; i++) {
+			sample value = rms_values[ch][i];
+			rms_sum += value * value;
+		}
+		rms[ch] = sqrt(rms_sum / fragment);
+
 		qsort(peak_values[ch], fragment, sizeof(*peak_values[ch]), compare_samples);
 		peak_score[ch] = peak_values[ch][min(1, fragment)];
 
 		dr_channel[ch] = to_db(peak_score[ch] / rms_score[ch]);
-		printf("Ch. %i:  Peak %8.2f    RMS %8.2f    DR = %6.2f\n",
+		printf("Ch. %2i:  Peak %8.2f (%8.2f)   RMS %8.2f (%8.2f)   DR = %6.2f\n",
 		       ch,
+		       to_db(peak_values[ch][0]),
 		       to_db(peak_score[ch]),
+		       to_db(rms[ch]),
 		       to_db(rms_score[ch]),
 		       dr_channel[ch]);
 		dr_sum += dr_channel[ch];
