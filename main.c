@@ -14,21 +14,18 @@
 #define BUFFSIZE (SAMPLE_RATE * MAX_CHANNELS * 3) // 3 seconds
 #define MAX_FRAGMENTS 32768 // more than 24h
 
-#define USE_GLOBAL_PEAK
+#define min(a, b) ((a) < (b) ? (a) : (b))
 
 typedef double sample;
 
 const char throbbler[5] = "/-\\|";
 
 sample rms_values[MAX_CHANNELS][MAX_FRAGMENTS];
-#ifndef USE_GLOBAL_PEAK
 sample peak_values[MAX_CHANNELS][MAX_FRAGMENTS];
-#endif
-uint8_t current_channel;
 
-int compare_fragments(const void *s1, const void *s2) {
-	sample rms1 = rms_values[current_channel][((size_t*)s1)[0]];
-	sample rms2 = rms_values[current_channel][((size_t*)s2)[0]];
+int compare_samples(const void *s1, const void *s2) {
+	sample rms1 = *(sample *)s1;
+	sample rms2 = *(sample *)s2;
 	if (rms1 > rms2) return -1;
 	else if (rms1 < rms2) return 1;
 	return 0;
@@ -251,10 +248,6 @@ int main(int argc, char** argv) {
 	int16_t buff[BUFFSIZE];
 	uint8_t ch = 0;
 	size_t fragment = 0;
-#ifdef USE_GLOBAL_PEAK
-	sample peak[MAX_CHANNELS];
-	for (uint8_t i = 0; i < MAX_CHANNELS; i++) peak[i] = 0;
-#endif
 	uint8_t throbbler_stage = 0;
 	fprintf(stderr, "Collecting fragments information...\n");
 	while (!sc_eof(&sc)) {
@@ -274,11 +267,7 @@ int main(int argc, char** argv) {
 			sample value = (sample)buff[i] / 32768.0;
 			sum[ch] += value * value;
 			value = fabs(value);
-#ifdef USE_GLOBAL_PEAK
-			if (peak[ch] < value) peak[ch] = value;
-#else
 			if (peak_values[ch][fragment] < value) peak_values[ch][fragment] = value;
-#endif
 			ch++;
 			ch %= chan_num;
 		}
@@ -298,46 +287,28 @@ int main(int argc, char** argv) {
 
 	fprintf(stderr, "\nDoing some statistics...\n");
 	sample rms_score[MAX_CHANNELS];
-#ifndef USE_GLOBAL_PEAK
 	sample peak_score[MAX_CHANNELS];
-#endif
 	sample dr_channel[MAX_CHANNELS];
-	size_t fragments[MAX_CHANNELS][fragment];
 	sample dr_sum = 0;
 	for (uint8_t ch = 0; ch < chan_num; ch++) {
-		for (size_t i = 0; i < fragment; i++) fragments[ch][i] = i;
-		current_channel = ch;
-		qsort(fragments[ch], fragment, sizeof(size_t), compare_fragments);
+		qsort(rms_values[ch], fragment, sizeof(**rms_values), compare_samples);
 		sample rms_sum = 0;
-#ifndef USE_GLOBAL_PEAK
-		sample peak_sum = 0;
-#endif
 		size_t values_to_use = fragment / 5;
 		for (size_t i = 0; i < values_to_use; i++) {
-			sample value = rms_values[ch][fragments[ch][i]];
+			sample value = rms_values[ch][i];
 			rms_sum += value * value;
-#ifndef USE_GLOBAL_PEAK
-			peak_sum += peak_values[ch][fragments[ch][i]];
-#endif
-//			fprintf(stderr, "DEBUG: %i: fragment #%i: Peak %8.2f, RMS %8.2f\n", i, fragments[ch][i], peak_values[ch][fragments[ch][i]], rms_values[ch][fragments[ch][i]]);
 		}
 		rms_score[ch] = sqrt(rms_sum / values_to_use);
-#ifndef USE_GLOBAL_PEAK
-		peak_score[ch] = peak_sum / values_to_use;
+
+		qsort(peak_values[ch], fragment, sizeof(*peak_values[ch]), compare_samples);
+		peak_score[ch] = peak_values[ch][min(1, fragment)];
+
 		dr_channel[ch] = to_db(peak_score[ch] / rms_score[ch]);
 		printf("Ch. %i:  Peak %8.2f    RMS %8.2f    DR = %6.2f\n",
 		       ch,
 		       to_db(peak_score[ch]),
 		       to_db(rms_score[ch]),
 		       dr_channel[ch]);
-#else
-		dr_channel[ch] = to_db(peak[ch] / rms_score[ch]);
-		printf("Ch. %i:  Peak %8.2f    RMS %8.2f    DR = %6.2f\n",
-		       ch,
-		       to_db(peak[ch]),
-		       to_db(rms_score[ch]),
-		       dr_channel[ch]);
-#endif
 		dr_sum += dr_channel[ch];
 	}
 	printf("Overall dynamic range: DR%i\n",
