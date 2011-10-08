@@ -140,11 +140,7 @@ int sc_refill(struct stream_context *self) {
 
 	while (self->state == STATE_OPEN) {
 		err = av_read_frame(self->format_ctx, &self->real_pkt);
-		if (err == AVERROR_EOF
-#ifdef AVERROR_IO
-			|| err == AVERROR_IO
-#endif
-			) {
+		if (err == AVERROR_EOF || url_feof(self->format_ctx->pb)) {
 			av_init_packet(&self->pkt);
 			self->pkt.data = NULL;
 			self->pkt.size = 0;
