@@ -8,6 +8,7 @@
 #include <assert.h>
 
 #include "libavformat/avformat.h"
+#include "libavutil/error.h"
 
 #define MAX_CHANNELS 2
 #define SAMPLE_RATE 44100
@@ -136,7 +137,11 @@ int sc_refill(struct stream_context *self) {
 
 	while (self->state == STATE_OPEN) {
 		err = av_read_frame(self->format_ctx, &self->real_pkt);
-		if (err == AVERROR_EOF || err == AVERROR_IO) {
+		if (err == AVERROR_EOF
+#ifdef AVERROR_IO
+			|| err == AVERROR_IO
+#endif
+			) {
 			av_init_packet(&self->pkt);
 			self->pkt.data = NULL;
 			self->pkt.size = 0;
