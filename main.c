@@ -24,28 +24,6 @@ const char throbbler[5] = "/-\\|";
 sample rms_values[MAX_CHANNELS][MAX_FRAGMENTS];
 sample peak_values[MAX_CHANNELS][MAX_FRAGMENTS];
 
-int compare_samples(const void *s1, const void *s2) {
-	sample rms1 = *(sample *)s1;
-	sample rms2 = *(sample *)s2;
-	if (rms1 > rms2) return -1;
-	else if (rms1 < rms2) return 1;
-	return 0;
-}
-
-sample to_db(const sample linear) {
-	return 20.0 * log10(linear);
-}
-
-void print_av_error(const char *function_name, int error) {
-	char errorbuf[128];
-	char *error_ptr = errorbuf;
-	if (av_strerror(error, errorbuf, sizeof(errorbuf)) < 0) {
-		error_ptr = strerror(AVUNERROR(error));
-	}
-	fprintf(stderr, "dr_meter: %s: %s\n", function_name, error_ptr);
-	exit(EXIT_FAILURE);
-}
-
 struct stream_context {
 	AVFormatContext *format_ctx;
 	int stream_index; // the stream we are decoding
@@ -91,13 +69,21 @@ int sc_open(struct stream_context *self, const char *filename) {
 	return 0;
 }
 
-bool sc_eof(struct stream_context *self) {
-	return self->state == STATE_CLOSED;
-}
-
 /* return the AVCodecContext for the active stream */
 AVCodecContext *sc_get_codec(struct stream_context *self) {
 	return self->format_ctx->streams[self->stream_index]->codec;
+}
+
+void sc_close(struct stream_context *self) {
+	if (self->state != STATE_CLOSED) {
+		avcodec_close(sc_get_codec(self));
+		self->state = STATE_CLOSED;
+	}
+	av_close_input_stream(self->format_ctx);
+}
+
+bool sc_eof(struct stream_context *self) {
+	return self->state == STATE_CLOSED;
 }
 
 int sc_start_stream(struct stream_context *self, int stream_index) {
@@ -217,22 +203,41 @@ ssize_t sc_read(struct stream_context *self, void *buf, size_t buf_size) {
 	return orig_buf_size - buf_size;
 }
 
-int main(int argc, char** argv) {
-	av_register_all();
+/******************************************************************************/
 
-	if (argc < 2) {
-		fprintf(stderr, "Usage: dr_meter file\n");
-		exit(1);
+int compare_samples(const void *s1, const void *s2) {
+	sample rms1 = *(sample *)s1;
+	sample rms2 = *(sample *)s2;
+	if (rms1 > rms2) return -1;
+	else if (rms1 < rms2) return 1;
+	return 0;
+}
+
+sample to_db(const sample linear) {
+	return 20.0 * log10(linear);
+}
+
+int print_av_error(const char *function_name, int error) {
+	char errorbuf[128];
+	char *error_ptr = errorbuf;
+	if (av_strerror(error, errorbuf, sizeof(errorbuf)) < 0) {
+		error_ptr = strerror(AVUNERROR(error));
 	}
+	fprintf(stderr, "dr_meter: %s: %s\n", function_name, error_ptr);
+	return error;
+}
 
+int do_calculate_dr(const char *filename) {
 	struct stream_context sc;
 	int err;
 
-	err = sc_open(&sc, argv[1]);
-	if (err < 0) { print_av_error("sc_open", err); }
+	printf("%s\n", filename);
+
+	err = sc_open(&sc, filename);
+	if (err < 0) { return print_av_error("sc_open", err); }
 
 	err = sc_start_stream(&sc, 0);
-	if (err < 0) { print_av_error("sc_start_stream", err); }
+	if (err < 0) { return print_av_error("sc_start_stream", err); }
 
 	{
 	AVCodecContext *codec_ctx = sc_get_codec(&sc);
@@ -258,12 +263,15 @@ int main(int argc, char** argv) {
 		}
 		ssize_t err = sc_read(&sc, buff, sizeof(buff));
 		if (err < 0) {
-			print_av_error("sc_read", err);
+			return print_av_error("sc_read", err);
 		}
 		size_t values_read = (size_t)err / sizeof(int16_t);
 		ch = 0;
 		sample sum[MAX_CHANNELS];
-		for (size_t i = 0; i < chan_num; i++) sum[i] = 0;
+		for (size_t i = 0; i < chan_num; i++) {
+			sum[i] = 0;
+			peak_values[i][fragment] = 0;
+		}
 		for (size_t i = 0; i < values_read; i++) {
 			sample value = (sample)buff[i] / 32768.0;
 			sum[ch] += value * value;
@@ -325,6 +333,30 @@ int main(int argc, char** argv) {
 	printf("Overall dynamic range: DR%i\n",
 	       (int)round(dr_sum / ((sample)chan_num)));
 
+	sc_close(&sc);
+
 	return 0;
 }
 
+int main(int argc, char** argv) {
+	av_register_all();
+
+	bool err_occurred = false;
+	int err;
+
+	if (argc <= 1) {
+		err = do_calculate_dr("pipe:");
+		if (err < 0) {
+			err_occurred = true;
+		}
+	} else {
+		for (int i = 1; i < argc; i++) {
+			err = do_calculate_dr(argv[i]);
+			if (err < 0) {
+				err_occurred = true;
+			}
+		}
+	}
+
+	exit(err_occurred ? EXIT_FAILURE : EXIT_SUCCESS);
+}
