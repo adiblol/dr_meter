@@ -254,11 +254,7 @@ int main(int argc, char** argv) {
 	size_t fragment = 0;
 #ifdef USE_GLOBAL_PEAK
 	sample peak[MAX_CHANNELS];
-	sample peak2nd[MAX_CHANNELS];
-	for (uint8_t i = 0; i < MAX_CHANNELS; i++) {
-		peak[i] = 0;
-		peak2nd[i] = 0;
-	}
+	for (uint8_t i = 0; i < MAX_CHANNELS; i++) peak[i] = 0;
 #endif
 	uint8_t throbbler_stage = 0;
 	fprintf(stderr, "Collecting fragments information...\n");
@@ -281,12 +277,8 @@ int main(int argc, char** argv) {
 			value = fabs(value);
 #ifdef USE_GLOBAL_PEAK
 			if (peak[ch] < value) {
-				peak2nd[ch] = peak[ch];
 				peak[ch] = value;
-			} else if (peak2nd[ch] < value){
-				peak2nd[ch] = value;
 			}
-
 #else
 			if (peak_values[ch][fragment] < value) peak_values[ch][fragment] = value;
 #endif
@@ -342,11 +334,10 @@ int main(int argc, char** argv) {
 		       to_db(rms_score[ch]),
 		       dr_channel[ch]);
 #else
-		dr_channel[ch] = to_db(peak2nd[ch] / rms_score[ch]);
-		printf("Ch. %i:  Peak %8.2f (%8.2f)   RMS %8.2f    DR = %6.2f\n",
+		dr_channel[ch] = to_db(peak[ch] / rms_score[ch]);
+		printf("Ch. %i:  Peak %8.2f   RMS %8.2f    DR = %6.2f\n",
 		       ch,
 		       to_db(peak[ch]),
-		       to_db(peak2nd[ch]),
 		       to_db(rms_score[ch]),
 		       dr_channel[ch]);
 #endif
