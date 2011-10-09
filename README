@@ -13,6 +13,10 @@ $ make
 $ ./dr_meter /your/favourite/music.flac
 
 
+What formats does it support?
+Every audio format ever. Or at least the ones supported by ffmpeg.
+
+
 Why to use it?
 To fight overcompression. Interesting links about loudness wars:
  * http://en.wikipedia.org/wiki/Loudness_war

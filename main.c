@@ -13,6 +13,10 @@
 #define MAX_CHANNELS 32
 #define MAX_FRAGMENTS 32768 // more than 24h
 
+#define FACTOR8 (((sample)1.0 / (sample)(1 << 7)))
+#define FACTOR16 ((sample)1.0 / (sample)(1 << 15))
+#define FACTOR32 ((sample)1.0 / (sample)(1UL << 31))
+
 #define min(a, b) ((a) < (b) ? (a) : (b))
 
 typedef double sample;
@@ -211,6 +215,17 @@ int compare_samples(const void *s1, const void *s2) {
 	return 0;
 }
 
+sample get_sample(void *buf, size_t i, enum AVSampleFormat sample_fmt) {
+	switch(sample_fmt) {
+	case AV_SAMPLE_FMT_U8: return (sample)(((uint8_t *)buf)[i] - 0x80) * FACTOR8;
+	case AV_SAMPLE_FMT_S16: return (sample)(((int16_t *)buf)[i]) * FACTOR16;
+	case AV_SAMPLE_FMT_S32: return (sample)(((int32_t *)buf)[i]) * FACTOR32;
+	case AV_SAMPLE_FMT_FLT: return (sample)(((float *)buf)[i]);
+	case AV_SAMPLE_FMT_DBL: return (sample)(((double *)buf)[i]);
+	default: return 0.0;
+	}
+}
+
 sample to_db(const sample linear) {
 	return 20.0 * log10(linear);
 }
@@ -247,16 +262,25 @@ int do_calculate_dr(const char *filename) {
 	avcodec_string(codecinfobuf, sizeof(codecinfobuf), codec_ctx, 0);
 	fprintf(stderr, "%.256s\n", codecinfobuf);
 
-	assert(codec_ctx->sample_fmt == SAMPLE_FMT_S16);
-
 	// Figure out the fragment size
 	chan_num = codec_ctx->channels;
 	const int sample_rate = codec_ctx->sample_rate;
-	const int sample_size = av_get_bytes_per_sample(codec_ctx->sample_fmt);
+	const int sample_fmt = codec_ctx->sample_fmt;
+	const int sample_size = av_get_bytes_per_sample(sample_fmt);
 
 	if (chan_num > MAX_CHANNELS) {
 		fprintf(stderr, "FATAL ERROR: Too many channels! Max channels %is.\n", MAX_CHANNELS);
 		err = 240; // ???
+		goto cleanup;
+	}
+
+	if (sample_fmt != AV_SAMPLE_FMT_U8 &&
+	    sample_fmt != AV_SAMPLE_FMT_S16 &&
+	    sample_fmt != AV_SAMPLE_FMT_S32 &&
+	    sample_fmt != AV_SAMPLE_FMT_FLT &&
+	    sample_fmt != AV_SAMPLE_FMT_DBL) {
+		fprintf(stderr, "FATAL ERROR: Unsupported sample format: %s\n", av_get_sample_fmt_name(sample_fmt));
+		err = 240;
 		goto cleanup;
 	}
 
@@ -305,7 +329,7 @@ int do_calculate_dr(const char *filename) {
 
 		for (size_t i = 0; i < values_read; /* look down */) {
 			for (int ch = 0; ch < chan_num; ch++, i++) {
-				sample value = (sample)buff[i] / 32768.0;
+				sample value = get_sample(buff, i, sample_fmt);
 				sum[ch] += value * value;
 				value = fabs(value);
 				if (peak_values[ch][fragment] < value) {
