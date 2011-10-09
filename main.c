@@ -13,6 +13,10 @@
 #define MAX_CHANNELS 32
 #define MAX_FRAGMENTS 32768 // more than 24h
 
+// The length of the window over which the RMS and peak are calculated.
+// Specified in milliseconds. Don't change this!
+#define FRAGMENT_LENGTH 3000
+
 #define FACTOR8 ((sample)1.0 / (sample)(1 << 7))
 #define FACTOR16 ((sample)1.0 / (sample)(1 << 15))
 #define FACTOR32 ((sample)1.0 / (sample)(1UL << 31))
@@ -284,8 +288,7 @@ int do_calculate_dr(const char *filename) {
 		goto cleanup;
 	}
 
-	// 3-second window
-	const size_t buff_size = chan_num * sample_rate * sample_size * 3;
+	const size_t buff_size = ((long)sample_rate * FRAGMENT_LENGTH / 1000) * sample_size * chan_num;
 	assert(buff_size > 0);
 
 	// Allocate the buffer
