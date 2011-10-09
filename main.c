@@ -246,7 +246,7 @@ int print_av_error(const char *function_name, int error) {
 
 int do_calculate_dr(const char *filename) {
 	struct stream_context sc;
-	int16_t *buff = NULL;
+	void *buff = NULL;
 	int chan_num = 0;
 	int err;
 
