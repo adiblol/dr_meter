@@ -231,8 +231,6 @@ int do_calculate_dr(const char *filename) {
 	int chan_num = 0;
 	int err;
 
-	printf("%s\n", filename);
-
 	err = sc_open(&sc, filename);
 	if (err < 0) { return print_av_error("sc_open", err); }
 
@@ -395,12 +393,14 @@ int main(int argc, char** argv) {
 	int err;
 
 	if (argc <= 1) {
+		fprintf(stderr, "Reading from standard input...\n");
 		err = do_calculate_dr("pipe:");
 		if (err) {
 			err_occurred = true;
 		}
 	} else {
 		for (int i = 1; i < argc; i++) {
+			printf("%s\n", argv[i]);
 			err = do_calculate_dr(argv[i]);
 			if (err) {
 				err_occurred = true;
