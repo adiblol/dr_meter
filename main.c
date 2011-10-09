@@ -236,19 +236,23 @@ int do_calculate_dr(const char *filename) {
 	err = sc_open(&sc, filename);
 	if (err < 0) { return print_av_error("sc_open", err); }
 
-	err = sc_start_stream(&sc, 0);
+	int stream_index = err = av_find_best_stream(
+		sc.format_ctx, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
+	if (err < 0) { return print_av_error("av_find_best_stream", err); }
+
+	err = sc_start_stream(&sc, stream_index);
 	if (err < 0) { return print_av_error("sc_start_stream", err); }
 
-	{
+	// Print out the stream info
 	AVCodecContext *codec_ctx = sc_get_codec(&sc);
 	char codecinfobuf[256];
 	avcodec_string(codecinfobuf, sizeof(codecinfobuf), codec_ctx, 0);
-	fprintf(stderr, "input: %.256s\n", codecinfobuf);
+	fprintf(stderr, "%.256s\n", codecinfobuf);
+
 	assert(codec_ctx->codec_type == AVMEDIA_TYPE_AUDIO);
 	assert(codec_ctx->sample_rate == SAMPLE_RATE);
 	assert(codec_ctx->channels == MAX_CHANNELS);
 	assert(codec_ctx->sample_fmt == SAMPLE_FMT_S16);
-	};
 
 	const uint8_t chan_num = 2;
 	int16_t buff[BUFFSIZE];
