@@ -10,9 +10,7 @@
 #include "libavformat/avformat.h"
 #include "libavutil/error.h"
 
-#define MAX_CHANNELS 2
-#define SAMPLE_RATE 44100
-#define BUFFSIZE (SAMPLE_RATE * MAX_CHANNELS * 3) // 3 seconds
+#define MAX_CHANNELS 32
 #define MAX_FRAGMENTS 32768 // more than 24h
 
 #define min(a, b) ((a) < (b) ? (a) : (b))
@@ -21,8 +19,8 @@ typedef double sample;
 
 const char throbbler[5] = "/-\\|";
 
-sample rms_values[MAX_CHANNELS][MAX_FRAGMENTS];
-sample peak_values[MAX_CHANNELS][MAX_FRAGMENTS];
+sample *rms_values[MAX_CHANNELS];
+sample *peak_values[MAX_CHANNELS];
 
 struct stream_context {
 	AVFormatContext *format_ctx;
@@ -75,11 +73,11 @@ AVCodecContext *sc_get_codec(struct stream_context *self) {
 }
 
 void sc_close(struct stream_context *self) {
-	if (self->state != STATE_CLOSED) {
+	if (STATE_OPEN <= self->state && self->state != STATE_CLOSED) {
 		avcodec_close(sc_get_codec(self));
+		av_close_input_stream(self->format_ctx);
 		self->state = STATE_CLOSED;
 	}
-	av_close_input_stream(self->format_ctx);
 }
 
 bool sc_eof(struct stream_context *self) {
@@ -229,6 +227,8 @@ int print_av_error(const char *function_name, int error) {
 
 int do_calculate_dr(const char *filename) {
 	struct stream_context sc;
+	int16_t *buff = NULL;
+	int chan_num = 0;
 	int err;
 
 	printf("%s\n", filename);
@@ -238,10 +238,10 @@ int do_calculate_dr(const char *filename) {
 
 	int stream_index = err = av_find_best_stream(
 		sc.format_ctx, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
-	if (err < 0) { return print_av_error("av_find_best_stream", err); }
+	if (err < 0) { print_av_error("av_find_best_stream", err); goto cleanup; }
 
 	err = sc_start_stream(&sc, stream_index);
-	if (err < 0) { return print_av_error("sc_start_stream", err); }
+	if (err < 0) { print_av_error("sc_start_stream", err); goto cleanup; }
 
 	// Print out the stream info
 	AVCodecContext *codec_ctx = sc_get_codec(&sc);
@@ -249,46 +249,77 @@ int do_calculate_dr(const char *filename) {
 	avcodec_string(codecinfobuf, sizeof(codecinfobuf), codec_ctx, 0);
 	fprintf(stderr, "%.256s\n", codecinfobuf);
 
-	assert(codec_ctx->codec_type == AVMEDIA_TYPE_AUDIO);
-	assert(codec_ctx->sample_rate == SAMPLE_RATE);
-	assert(codec_ctx->channels == MAX_CHANNELS);
 	assert(codec_ctx->sample_fmt == SAMPLE_FMT_S16);
 
-	const uint8_t chan_num = 2;
-	int16_t buff[BUFFSIZE];
-	uint8_t ch = 0;
+	// Figure out the fragment size
+	chan_num = codec_ctx->channels;
+	const int sample_rate = codec_ctx->sample_rate;
+	const int sample_size = av_get_bytes_per_sample(codec_ctx->sample_fmt);
+
+	if (chan_num > MAX_CHANNELS) {
+		fprintf(stderr, "FATAL ERROR: Too many channels! Max channels %is.\n", MAX_CHANNELS);
+		err = 240; // ???
+		goto cleanup;
+	}
+
+	// 3-second window
+	const size_t buff_size = chan_num * sample_rate * sample_size * 3;
+	assert(buff_size > 0);
+
+	// Allocate the buffer
+	buff = malloc(buff_size);
+	if (buff == NULL) { err = AVERROR(ENOMEM); goto cleanup; }
+
+	// Allocate RMS and peak storage
+	for (int ch = 0; ch < chan_num; ch++) {
+		rms_values[ch] = malloc(MAX_FRAGMENTS * sizeof(*rms_values[ch]));
+		peak_values[ch] = malloc(MAX_FRAGMENTS * sizeof(*rms_values[ch]));
+		if (rms_values[ch] == NULL || peak_values[ch] == NULL) {
+			err = AVERROR(ENOMEM);
+			goto cleanup;
+		}
+	}
+
 	size_t fragment = 0;
-	uint8_t throbbler_stage = 0;
+	int throbbler_stage = 0;
 	fprintf(stderr, "Collecting fragments information...\n");
 	while (!sc_eof(&sc)) {
 		if (fragment >= MAX_FRAGMENTS) {
 			fprintf(stderr, "FATAL ERROR: Input too long! Max length %is.\n", MAX_FRAGMENTS*3);
-			return 240;
+			err = 240; // ???
+			goto cleanup;
 		}
-		ssize_t err = sc_read(&sc, buff, sizeof(buff));
-		if (err < 0) {
-			return print_av_error("sc_read", err);
+		ssize_t bytes_read = sc_read(&sc, buff, buff_size);
+		if (bytes_read < 0) {
+			err = bytes_read;
+			print_av_error("sc_read", err);
+			goto cleanup;
 		}
-		size_t values_read = (size_t)err / sizeof(int16_t);
+		size_t values_read = (size_t)bytes_read / sample_size;
 		if (!values_read) { continue; }
-		ch = 0;
+		assert(values_read % chan_num == 0);
+
 		sample sum[MAX_CHANNELS];
-		for (size_t i = 0; i < chan_num; i++) {
-			sum[i] = 0;
-			peak_values[i][fragment] = 0;
+		for (int ch = 0; ch < chan_num; ch++) {
+			sum[ch] = 0;
+			peak_values[ch][fragment] = 0;
 		}
-		for (size_t i = 0; i < values_read; i++) {
-			sample value = (sample)buff[i] / 32768.0;
-			sum[ch] += value * value;
-			value = fabs(value);
-			if (peak_values[ch][fragment] < value) peak_values[ch][fragment] = value;
-			ch++;
-			ch %= chan_num;
+
+		for (size_t i = 0; i < values_read; /* look down */) {
+			for (int ch = 0; ch < chan_num; ch++, i++) {
+				sample value = (sample)buff[i] / 32768.0;
+				sum[ch] += value * value;
+				value = fabs(value);
+				if (peak_values[ch][fragment] < value) {
+					peak_values[ch][fragment] = value;
+				}
+			}
 		}
-		for (ch = 0; ch < chan_num; ch++) {
+		for (int ch = 0; ch < chan_num; ch++) {
 			rms_values[ch][fragment] = sqrt(2.0 * sum[ch] / ((sample)(values_read / chan_num)));
 		}
 		fragment++;
+
 		if ((throbbler_stage % 4) == 0) {
 			fprintf(stderr, "\033[1K\033[1G %c  %2i:%02i ",
 			                throbbler[throbbler_stage / 4],
@@ -338,7 +369,21 @@ int do_calculate_dr(const char *filename) {
 	printf("Overall dynamic range: DR%i\n",
 	       (int)round(dr_sum / ((sample)chan_num)));
 
+cleanup:
 	sc_close(&sc);
+
+	for (int ch = 0; ch < chan_num; ch++) {
+		free(rms_values[ch]);
+		free(peak_values[ch]);
+		rms_values[ch] = NULL;
+		peak_values[ch] = NULL;
+	}
+
+	free(buff);
+
+	if (err < 0) {
+		return err;
+	}
 
 	return 0;
 }
@@ -351,13 +396,13 @@ int main(int argc, char** argv) {
 
 	if (argc <= 1) {
 		err = do_calculate_dr("pipe:");
-		if (err < 0) {
+		if (err) {
 			err_occurred = true;
 		}
 	} else {
 		for (int i = 1; i < argc; i++) {
 			err = do_calculate_dr(argv[i]);
-			if (err < 0) {
+			if (err) {
 				err_occurred = true;
 			}
 		}
