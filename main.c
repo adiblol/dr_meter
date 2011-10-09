@@ -270,6 +270,7 @@ int do_calculate_dr(const char *filename) {
 			return print_av_error("sc_read", err);
 		}
 		size_t values_read = (size_t)err / sizeof(int16_t);
+		if (!values_read) { continue; }
 		ch = 0;
 		sample sum[MAX_CHANNELS];
 		for (size_t i = 0; i < chan_num; i++) {
