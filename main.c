@@ -358,7 +358,7 @@ int do_calculate_dr(const char *filename) {
 	sample peak_score[MAX_CHANNELS];
 	sample dr_channel[MAX_CHANNELS];
 	sample dr_sum = 0;
-	for (uint8_t ch = 0; ch < chan_num; ch++) {
+	for (int ch = 0; ch < chan_num; ch++) {
 		qsort(rms_values[ch], fragment, sizeof(**rms_values), compare_samples);
 		sample rms_sum = 0;
 		size_t values_to_use = fragment / 5;
