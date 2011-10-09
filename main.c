@@ -13,7 +13,7 @@
 #define MAX_CHANNELS 32
 #define MAX_FRAGMENTS 32768 // more than 24h
 
-#define FACTOR8 (((sample)1.0 / (sample)(1 << 7)))
+#define FACTOR8 ((sample)1.0 / (sample)(1 << 7))
 #define FACTOR16 ((sample)1.0 / (sample)(1 << 15))
 #define FACTOR32 ((sample)1.0 / (sample)(1UL << 31))
 
