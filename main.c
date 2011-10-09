@@ -10,44 +10,25 @@
 #include "libavformat/avformat.h"
 #include "libavutil/error.h"
 
-#define MAX_CHANNELS 2
-#define SAMPLE_RATE 44100
-#define BUFFSIZE (SAMPLE_RATE * MAX_CHANNELS * 3) // 3 seconds
+#define MAX_CHANNELS 32
 #define MAX_FRAGMENTS 32768 // more than 24h
 
-#define USE_GLOBAL_PEAK
+// The length of the window over which the RMS and peak are calculated.
+// Specified in milliseconds. Don't change this!
+#define FRAGMENT_LENGTH 3000
+
+#define FACTOR8 ((sample)1.0 / (sample)(1 << 7))
+#define FACTOR16 ((sample)1.0 / (sample)(1 << 15))
+#define FACTOR32 ((sample)1.0 / (sample)(1UL << 31))
+
+#define min(a, b) ((a) < (b) ? (a) : (b))
 
 typedef double sample;
 
 const char throbbler[5] = "/-\\|";
 
-sample rms_values[MAX_CHANNELS][MAX_FRAGMENTS];
-#ifndef USE_GLOBAL_PEAK
-sample peak_values[MAX_CHANNELS][MAX_FRAGMENTS];
-#endif
-uint8_t current_channel;
-
-int compare_fragments(const void *s1, const void *s2) {
-	sample rms1 = rms_values[current_channel][((size_t*)s1)[0]];
-	sample rms2 = rms_values[current_channel][((size_t*)s2)[0]];
-	if (rms1 > rms2) return -1;
-	else if (rms1 < rms2) return 1;
-	return 0;
-}
-
-sample to_db(const sample linear) {
-	return 20.0 * log10(linear);
-}
-
-void print_av_error(const char *function_name, int error) {
-	char errorbuf[128];
-	char *error_ptr = errorbuf;
-	if (av_strerror(error, errorbuf, sizeof(errorbuf)) < 0) {
-		error_ptr = strerror(AVUNERROR(error));
-	}
-	fprintf(stderr, "dr_meter: %s: %s\n", function_name, error_ptr);
-	exit(EXIT_FAILURE);
-}
+sample *rms_values[MAX_CHANNELS];
+sample *peak_values[MAX_CHANNELS];
 
 struct stream_context {
 	AVFormatContext *format_ctx;
@@ -94,13 +75,21 @@ int sc_open(struct stream_context *self, const char *filename) {
 	return 0;
 }
 
-bool sc_eof(struct stream_context *self) {
-	return self->state == STATE_CLOSED;
-}
-
 /* return the AVCodecContext for the active stream */
 AVCodecContext *sc_get_codec(struct stream_context *self) {
 	return self->format_ctx->streams[self->stream_index]->codec;
+}
+
+void sc_close(struct stream_context *self) {
+	if (STATE_OPEN <= self->state && self->state != STATE_CLOSED) {
+		avcodec_close(sc_get_codec(self));
+		av_close_input_stream(self->format_ctx);
+		self->state = STATE_CLOSED;
+	}
+}
+
+bool sc_eof(struct stream_context *self) {
+	return self->state == STATE_CLOSED;
 }
 
 int sc_start_stream(struct stream_context *self, int stream_index) {
@@ -220,75 +209,142 @@ ssize_t sc_read(struct stream_context *self, void *buf, size_t buf_size) {
 	return orig_buf_size - buf_size;
 }
 
-int main(int argc, char** argv) {
-	av_register_all();
+/******************************************************************************/
 
-	if (argc < 2) {
-		fprintf(stderr, "Usage: dr_meter file\n");
-		exit(1);
+int compare_samples(const void *s1, const void *s2) {
+	sample rms1 = *(sample *)s1;
+	sample rms2 = *(sample *)s2;
+	if (rms1 > rms2) return -1;
+	else if (rms1 < rms2) return 1;
+	return 0;
+}
+
+sample get_sample(void *buf, size_t i, enum AVSampleFormat sample_fmt) {
+	switch(sample_fmt) {
+	case AV_SAMPLE_FMT_U8: return (sample)(((uint8_t *)buf)[i] - 0x80) * FACTOR8;
+	case AV_SAMPLE_FMT_S16: return (sample)(((int16_t *)buf)[i]) * FACTOR16;
+	case AV_SAMPLE_FMT_S32: return (sample)(((int32_t *)buf)[i]) * FACTOR32;
+	case AV_SAMPLE_FMT_FLT: return (sample)(((float *)buf)[i]);
+	case AV_SAMPLE_FMT_DBL: return (sample)(((double *)buf)[i]);
+	default: return 0.0;
 	}
+}
 
+sample to_db(const sample linear) {
+	return 20.0 * log10(linear);
+}
+
+int print_av_error(const char *function_name, int error) {
+	char errorbuf[128];
+	char *error_ptr = errorbuf;
+	if (av_strerror(error, errorbuf, sizeof(errorbuf)) < 0) {
+		error_ptr = strerror(AVUNERROR(error));
+	}
+	fprintf(stderr, "dr_meter: %s: %s\n", function_name, error_ptr);
+	return error;
+}
+
+int do_calculate_dr(const char *filename) {
 	struct stream_context sc;
+	void *buff = NULL;
+	int chan_num = 0;
 	int err;
 
-	err = sc_open(&sc, argv[1]);
-	if (err < 0) { print_av_error("sc_open", err); }
+	err = sc_open(&sc, filename);
+	if (err < 0) { return print_av_error("sc_open", err); }
 
-	err = sc_start_stream(&sc, 0);
-	if (err < 0) { print_av_error("sc_start_stream", err); }
+	int stream_index = err = av_find_best_stream(
+		sc.format_ctx, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
+	if (err < 0) { print_av_error("av_find_best_stream", err); goto cleanup; }
 
-	{
+	err = sc_start_stream(&sc, stream_index);
+	if (err < 0) { print_av_error("sc_start_stream", err); goto cleanup; }
+
+	// Print out the stream info
 	AVCodecContext *codec_ctx = sc_get_codec(&sc);
 	char codecinfobuf[256];
 	avcodec_string(codecinfobuf, sizeof(codecinfobuf), codec_ctx, 0);
-	fprintf(stderr, "input: %.256s\n", codecinfobuf);
-	assert(codec_ctx->codec_type == AVMEDIA_TYPE_AUDIO);
-	assert(codec_ctx->sample_rate == SAMPLE_RATE);
-	assert(codec_ctx->channels == MAX_CHANNELS);
-	assert(codec_ctx->sample_fmt == SAMPLE_FMT_S16);
-	};
+	fprintf(stderr, "%.256s\n", codecinfobuf);
 
-	const uint8_t chan_num = 2;
-	int16_t buff[BUFFSIZE];
-	uint8_t ch = 0;
+	// Figure out the fragment size
+	chan_num = codec_ctx->channels;
+	const int sample_rate = codec_ctx->sample_rate;
+	const int sample_fmt = codec_ctx->sample_fmt;
+	const int sample_size = av_get_bytes_per_sample(sample_fmt);
+
+	if (chan_num > MAX_CHANNELS) {
+		fprintf(stderr, "FATAL ERROR: Too many channels! Max channels %is.\n", MAX_CHANNELS);
+		err = 240; // ???
+		goto cleanup;
+	}
+
+	if (sample_fmt != AV_SAMPLE_FMT_U8 &&
+	    sample_fmt != AV_SAMPLE_FMT_S16 &&
+	    sample_fmt != AV_SAMPLE_FMT_S32 &&
+	    sample_fmt != AV_SAMPLE_FMT_FLT &&
+	    sample_fmt != AV_SAMPLE_FMT_DBL) {
+		fprintf(stderr, "FATAL ERROR: Unsupported sample format: %s\n", av_get_sample_fmt_name(sample_fmt));
+		err = 240;
+		goto cleanup;
+	}
+
+	const size_t buff_size = ((long)sample_rate * FRAGMENT_LENGTH / 1000) * sample_size * chan_num;
+	assert(buff_size > 0);
+
+	// Allocate the buffer
+	buff = malloc(buff_size);
+	if (buff == NULL) { err = AVERROR(ENOMEM); goto cleanup; }
+
+	// Allocate RMS and peak storage
+	for (int ch = 0; ch < chan_num; ch++) {
+		rms_values[ch] = malloc(MAX_FRAGMENTS * sizeof(*rms_values[ch]));
+		peak_values[ch] = malloc(MAX_FRAGMENTS * sizeof(*rms_values[ch]));
+		if (rms_values[ch] == NULL || peak_values[ch] == NULL) {
+			err = AVERROR(ENOMEM);
+			goto cleanup;
+		}
+	}
+
 	size_t fragment = 0;
-#ifdef USE_GLOBAL_PEAK
-	sample peak[MAX_CHANNELS];
-	for (uint8_t i = 0; i < MAX_CHANNELS; i++) peak[i] = 0;
-#endif
-	uint8_t throbbler_stage = 0;
+	int throbbler_stage = 0;
 	fprintf(stderr, "Collecting fragments information...\n");
 	while (!sc_eof(&sc)) {
 		if (fragment >= MAX_FRAGMENTS) {
 			fprintf(stderr, "FATAL ERROR: Input too long! Max length %is.\n", MAX_FRAGMENTS*3);
-			return 240;
+			err = 240; // ???
+			goto cleanup;
 		}
-		ssize_t err = sc_read(&sc, buff, sizeof(buff));
-		if (err < 0) {
+		ssize_t bytes_read = sc_read(&sc, buff, buff_size);
+		if (bytes_read < 0) {
+			err = bytes_read;
 			print_av_error("sc_read", err);
+			goto cleanup;
 		}
-		size_t values_read = (size_t)err / sizeof(int16_t);
-		ch = 0;
+		size_t values_read = (size_t)bytes_read / sample_size;
+		if (!values_read) { continue; }
+		assert(values_read % chan_num == 0);
+
 		sample sum[MAX_CHANNELS];
-		for (size_t i = 0; i < chan_num; i++) sum[i] = 0;
-		for (size_t i = 0; i < values_read; i++) {
-			sample value = (sample)buff[i] / 32768.0;
-			sum[ch] += value * value;
-			value = fabs(value);
-#ifdef USE_GLOBAL_PEAK
-			if (peak[ch] < value) {
-				peak[ch] = value;
-			}
-#else
-			if (peak_values[ch][fragment] < value) peak_values[ch][fragment] = value;
-#endif
-			ch++;
-			ch %= chan_num;
+		for (int ch = 0; ch < chan_num; ch++) {
+			sum[ch] = 0;
+			peak_values[ch][fragment] = 0;
 		}
-		for (ch = 0; ch < chan_num; ch++) {
+
+		for (size_t i = 0; i < values_read; /* look down */) {
+			for (int ch = 0; ch < chan_num; ch++, i++) {
+				sample value = get_sample(buff, i, sample_fmt);
+				sum[ch] += value * value;
+				value = fabs(value);
+				if (peak_values[ch][fragment] < value) {
+					peak_values[ch][fragment] = value;
+				}
+			}
+		}
+		for (int ch = 0; ch < chan_num; ch++) {
 			rms_values[ch][fragment] = sqrt(2.0 * sum[ch] / ((sample)(values_read / chan_num)));
 		}
 		fragment++;
+
 		if ((throbbler_stage % 4) == 0) {
 			fprintf(stderr, "\033[1K\033[1G %c  %2i:%02i ",
 			                throbbler[throbbler_stage / 4],
@@ -301,51 +357,83 @@ int main(int argc, char** argv) {
 
 	fprintf(stderr, "\nDoing some statistics...\n");
 	sample rms_score[MAX_CHANNELS];
-#ifndef USE_GLOBAL_PEAK
+	sample rms[MAX_CHANNELS];
 	sample peak_score[MAX_CHANNELS];
-#endif
 	sample dr_channel[MAX_CHANNELS];
-	size_t fragments[MAX_CHANNELS][fragment];
 	sample dr_sum = 0;
-	for (uint8_t ch = 0; ch < chan_num; ch++) {
-		for (size_t i = 0; i < fragment; i++) fragments[ch][i] = i;
-		current_channel = ch;
-		qsort(fragments[ch], fragment, sizeof(size_t), compare_fragments);
+	for (int ch = 0; ch < chan_num; ch++) {
+		qsort(rms_values[ch], fragment, sizeof(**rms_values), compare_samples);
 		sample rms_sum = 0;
-#ifndef USE_GLOBAL_PEAK
-		sample peak_sum = 0;
-#endif
 		size_t values_to_use = fragment / 5;
 		for (size_t i = 0; i < values_to_use; i++) {
-			sample value = rms_values[ch][fragments[ch][i]];
+			sample value = rms_values[ch][i];
 			rms_sum += value * value;
-#ifndef USE_GLOBAL_PEAK
-			peak_sum += peak_values[ch][fragments[ch][i]];
-#endif
-//			fprintf(stderr, "DEBUG: %i: fragment #%i: Peak %8.2f, RMS %8.2f\n", i, fragments[ch][i], peak_values[ch][fragments[ch][i]], rms_values[ch][fragments[ch][i]]);
 		}
 		rms_score[ch] = sqrt(rms_sum / values_to_use);
-#ifndef USE_GLOBAL_PEAK
-		peak_score[ch] = peak_sum / values_to_use;
+
+		rms_sum = 0;
+		for (size_t i = 0; i < fragment; i++) {
+			sample value = rms_values[ch][i];
+			rms_sum += value * value;
+		}
+		rms[ch] = sqrt(rms_sum / fragment);
+
+		qsort(peak_values[ch], fragment, sizeof(*peak_values[ch]), compare_samples);
+		peak_score[ch] = peak_values[ch][min(1, fragment)];
+
 		dr_channel[ch] = to_db(peak_score[ch] / rms_score[ch]);
-		printf("Ch. %i:  Peak %8.2f    RMS %8.2f    DR = %6.2f\n",
+		printf("Ch. %2i:  Peak %8.2f (%8.2f)   RMS %8.2f (%8.2f)   DR = %6.2f\n",
 		       ch,
+		       to_db(peak_values[ch][0]),
 		       to_db(peak_score[ch]),
+		       to_db(rms[ch]),
 		       to_db(rms_score[ch]),
 		       dr_channel[ch]);
-#else
-		dr_channel[ch] = to_db(peak[ch] / rms_score[ch]);
-		printf("Ch. %i:  Peak %8.2f   RMS %8.2f    DR = %6.2f\n",
-		       ch,
-		       to_db(peak[ch]),
-		       to_db(rms_score[ch]),
-		       dr_channel[ch]);
-#endif
 		dr_sum += dr_channel[ch];
 	}
 	printf("Overall dynamic range: DR%i\n",
 	       (int)round(dr_sum / ((sample)chan_num)));
 
+cleanup:
+	sc_close(&sc);
+
+	for (int ch = 0; ch < chan_num; ch++) {
+		free(rms_values[ch]);
+		free(peak_values[ch]);
+		rms_values[ch] = NULL;
+		peak_values[ch] = NULL;
+	}
+
+	free(buff);
+
+	if (err < 0) {
+		return err;
+	}
+
 	return 0;
 }
 
+int main(int argc, char** argv) {
+	av_register_all();
+
+	bool err_occurred = false;
+	int err;
+
+	if (argc <= 1) {
+		fprintf(stderr, "Reading from standard input...\n");
+		err = do_calculate_dr("pipe:");
+		if (err) {
+			err_occurred = true;
+		}
+	} else {
+		for (int i = 1; i < argc; i++) {
+			printf("%s\n", argv[i]);
+			err = do_calculate_dr(argv[i]);
+			if (err) {
+				err_occurred = true;
+			}
+		}
+	}
+
+	exit(err_occurred ? EXIT_FAILURE : EXIT_SUCCESS);
+}
