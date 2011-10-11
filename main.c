@@ -4,7 +4,6 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/types.h>
 #include <assert.h>
 
 #include "libavformat/avformat.h"
@@ -45,8 +44,6 @@ struct stream_context {
 	void *buf;
 	size_t buf_size; // the number of bytes present
 	size_t buf_alloc_size; // the number of bytes allocated
-	void *pos;
-	size_t remaining;
 };
 
 void sc_init(struct stream_context *self) {
@@ -55,8 +52,6 @@ void sc_init(struct stream_context *self) {
 	self->buf = NULL;
 	self->buf_size = 0;
 	self->buf_alloc_size = 0;
-	self->pos = NULL;
-	self->remaining = 0;
 	self->state = STATE_INITIALIZED;
 }
 
@@ -108,8 +103,6 @@ int sc_start_stream(struct stream_context *self, int stream_index) {
 		self->buf = av_malloc(buf_size);
 		self->buf_size = 0;
 		self->buf_alloc_size = buf_size;
-		self->pos = self->buf;
-		self->remaining = 0;
 	}
 	if (self->buf == NULL) {
 		return AVERROR(ENOMEM);
@@ -119,13 +112,15 @@ int sc_start_stream(struct stream_context *self, int stream_index) {
 	return avcodec_open(ctx, codec);
 }
 
-int sc_refill(struct stream_context *self) {
+// Decode one frame of audio
+int sc_get_next_frame(struct stream_context *self) {
 	int err;
 
 	if (self->state == STATE_CLOSED) {
 		return AVERROR_EOF;
 	}
 
+	// Grab a new packet, if necessary
 	while (self->state == STATE_OPEN) {
 		err = av_read_frame(self->format_ctx, &self->real_pkt);
 		if (err == AVERROR_EOF || url_feof(self->format_ctx->pb)) {
@@ -160,9 +155,6 @@ int sc_refill(struct stream_context *self) {
 
 	self->buf_size = buf_size;
 
-	self->pos = self->buf;
-	self->remaining = buf_size;
-
 	if (self->state == STATE_VALID_PACKET) {
 		if (0 < bytes_used && bytes_used < self->pkt.size) {
 			self->pkt.data += bytes_used;
@@ -177,35 +169,6 @@ int sc_refill(struct stream_context *self) {
 	}
 
 	return 0;
-}
-
-ssize_t sc_read(struct stream_context *self, void *buf, size_t buf_size) {
-	size_t orig_buf_size = buf_size;
-	size_t read_size = 0;
-	int err;
-	while (buf_size) {
-		if (self->remaining <= 0) {
-			err = sc_refill(self);
-			if (err == AVERROR_EOF) {
-				break;
-			} else if (err < 0) {
-				return err;
-			}
-		}
-
-		read_size = FFMIN(self->remaining, buf_size);
-		//printf("%d, %d, %d\n", read_size, buf_size, self->pkt.size);
-		if (read_size) {
-			memmove(buf, self->pos, read_size);
-			self->pos += read_size;
-			self->remaining -= read_size;
-			buf += read_size;
-			buf_size -= read_size;
-		}
-	}
-
-	// return the number of bytes copied
-	return orig_buf_size - buf_size;
 }
 
 /******************************************************************************/
@@ -269,6 +232,20 @@ void meter_init(struct dr_meter *self) {
 }
 
 int meter_start(struct dr_meter *self, int channels, int sample_rate, int sample_fmt) {
+	if (channels > MAX_CHANNELS) {
+		fprintf(stderr, "FATAL ERROR: Too many channels! Max channels %is.\n", MAX_CHANNELS);
+		return 240; // ???
+	}
+
+	if (sample_fmt != AV_SAMPLE_FMT_U8 &&
+	    sample_fmt != AV_SAMPLE_FMT_S16 &&
+	    sample_fmt != AV_SAMPLE_FMT_S32 &&
+	    sample_fmt != AV_SAMPLE_FMT_FLT &&
+	    sample_fmt != AV_SAMPLE_FMT_DBL) {
+		fprintf(stderr, "FATAL ERROR: Unsupported sample format: %s\n", av_get_sample_fmt_name(sample_fmt));
+		return 240;
+	}
+
 	// Allocate RMS and peak storage
 	for (int ch = 0; ch < channels; ch++) {
 		self->rms_values[ch] =
@@ -285,6 +262,7 @@ int meter_start(struct dr_meter *self, int channels, int sample_rate, int sample
 	self->sample_fmt = sample_fmt;
 	self->sample_size = av_get_bytes_per_sample(sample_fmt);
 	self->fragment_size = ((long)sample_rate * FRAGMENT_LENGTH / 1000);
+	assert(self->fragment_size > 0);
 	return 0;
 }
 
@@ -435,7 +413,6 @@ int print_av_error(const char *function_name, int error) {
 int do_calculate_dr(const char *filename) {
 	struct stream_context sc;
 	struct dr_meter meter;
-	void *buff = NULL;
 	int err;
 
 	meter_init(&meter);
@@ -456,72 +433,39 @@ int do_calculate_dr(const char *filename) {
 	avcodec_string(codecinfobuf, sizeof(codecinfobuf), codec_ctx, 0);
 	fprintf(stderr, "%.256s\n", codecinfobuf);
 
-	// Figure out the fragment size
-	const int chan_num = codec_ctx->channels;
-	const int sample_fmt = codec_ctx->sample_fmt;
-	const int sample_size = av_get_bytes_per_sample(sample_fmt);
-
-	if (chan_num > MAX_CHANNELS) {
-		fprintf(stderr, "FATAL ERROR: Too many channels! Max channels %is.\n", MAX_CHANNELS);
-		err = 240; // ???
-		goto cleanup;
-	}
-
-	if (sample_fmt != AV_SAMPLE_FMT_U8 &&
-	    sample_fmt != AV_SAMPLE_FMT_S16 &&
-	    sample_fmt != AV_SAMPLE_FMT_S32 &&
-	    sample_fmt != AV_SAMPLE_FMT_FLT &&
-	    sample_fmt != AV_SAMPLE_FMT_DBL) {
-		fprintf(stderr, "FATAL ERROR: Unsupported sample format: %s\n", av_get_sample_fmt_name(sample_fmt));
-		err = 240;
-		goto cleanup;
-	}
-
 	err = meter_start(&meter, codec_ctx->channels, codec_ctx->sample_rate, codec_ctx->sample_fmt);
-	if (err < 0) { goto cleanup; }
-
-	const size_t buff_size = meter.fragment_size * sample_size * chan_num;
-	assert(buff_size > 0);
-
-	// Allocate the buffer
-	buff = malloc(buff_size);
-	if (buff == NULL) { err = AVERROR(ENOMEM); goto cleanup; }
+	if (err) { goto cleanup; }
 
 	fprintf(stderr, "Collecting fragments information...\n");
 
 	size_t fragment = 0;
 	int throbbler_stage = 0;
 	while (!sc_eof(&sc)) {
-		ssize_t bytes_read = sc_read(&sc, buff, buff_size);
-		if (bytes_read < 0) {
-			err = bytes_read;
-			print_av_error("sc_read", err);
+		err = sc_get_next_frame(&sc);
+		if (err < 0) {
+			print_av_error("sc_get_next_frame", err);
 			goto cleanup;
 		}
 
-		if (bytes_read) {
-			err = meter_feed(&meter, buff, bytes_read);
-			if (err) {
-				goto cleanup;
+		err = meter_feed(&meter, sc.buf, sc.buf_size);
+		if (err) { goto cleanup; }
+
+		if (fragment < meter.fragment) {
+			fragment = meter.fragment;
+			if ((throbbler_stage % 4) == 0) {
+				fprintf(stderr, "\033[1K\033[1G %c  %2i:%02i ",
+						throbbler[throbbler_stage / 4],
+						(fragment * 3) / 60,
+						(fragment * 3) % 60);
 			}
+			throbbler_stage += 1;
+			throbbler_stage %= 16;
 		}
-
-		fragment++;
-
-		if ((throbbler_stage % 4) == 0) {
-			fprintf(stderr, "\033[1K\033[1G %c  %2i:%02i ",
-			                throbbler[throbbler_stage / 4],
-			                (fragment * 3) / 60,
-			                (fragment * 3) % 60);
-		}
-		throbbler_stage += 1;
-		throbbler_stage %= 16;
 	}
 
 	meter_finish(&meter);
 
 cleanup:
-	free(buff);
 	meter_free(&meter);
 	sc_close(&sc);
 
