@@ -315,10 +315,10 @@ static void meter_fragment_finish(struct dr_meter *self) {
 	self->fragment_started = false;
 }
 
-static void meter_scan_internal(struct dr_meter *self, void *buf, size_t samples) {
+static inline void meter_scan_internal(struct dr_meter *self, void *buf, size_t samples, enum AVSampleFormat sample_fmt) {
 	for (size_t i = 0; i < samples; i++) {
 		for (int ch = 0; ch < self->channels; ch++) {
-			sample value = get_sample(buf, i * self->channels + ch, self->sample_fmt);
+			sample value = get_sample(buf, i * self->channels + ch, sample_fmt);
 			self->sum[ch] += value * value;
 
 			value = fabs(value);
@@ -342,7 +342,17 @@ int meter_feed(struct dr_meter *self, void *buf, size_t buf_size) {
 
 		size_t fragment_left = self->fragment_size - self->fragment_read;
 		size_t to_scan = min(fragment_left, samples);
-		meter_scan_internal(self, buf, to_scan);
+		#define CASE(fmt) case fmt: meter_scan_internal(self, buf, to_scan, fmt); break
+		switch (self->sample_fmt) {
+		CASE(AV_SAMPLE_FMT_U8);
+		CASE(AV_SAMPLE_FMT_S16);
+		CASE(AV_SAMPLE_FMT_S32);
+		CASE(AV_SAMPLE_FMT_FLT);
+		CASE(AV_SAMPLE_FMT_DBL);
+		default:
+			meter_scan_internal(self, buf, to_scan, self->sample_fmt);
+		}
+		#undef CASE
 		buf = (char *)buf + self->sample_size * self->channels * to_scan;
 		self->fragment_read += to_scan;
 
