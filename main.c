@@ -27,8 +27,7 @@ typedef double sample;
 
 const char throbbler[5] = "/-\\|";
 
-sample *rms_values[MAX_CHANNELS];
-sample *peak_values[MAX_CHANNELS];
+/******************************************************************************/
 
 struct stream_context {
 	AVFormatContext *format_ctx;
@@ -211,6 +210,24 @@ ssize_t sc_read(struct stream_context *self, void *buf, size_t buf_size) {
 
 /******************************************************************************/
 
+struct dr_meter {
+	sample *rms_values[MAX_CHANNELS];
+	sample *peak_values[MAX_CHANNELS];
+
+	sample sum[MAX_CHANNELS];
+	sample peak[MAX_CHANNELS];
+
+	int channels;
+	int sample_rate;
+	int sample_fmt;
+	int sample_size;
+
+	size_t fragment; // The index of the current fragment
+	size_t fragment_size; // The size of a fragment in samples
+	size_t fragment_read; // The number of samples scanned so far
+	bool fragment_started;
+};
+
 int compare_samples(const void *s1, const void *s2) {
 	sample rms1 = *(sample *)s1;
 	sample rms2 = *(sample *)s2;
@@ -234,6 +251,167 @@ sample to_db(const sample linear) {
 	return 20.0 * log10(linear);
 }
 
+void meter_init(struct dr_meter *self) {
+	for (int ch = 0; ch < MAX_CHANNELS; ch++) {
+		self->rms_values[ch] = NULL;
+		self->peak_values[ch] = NULL;
+		self->sum[ch] = 0;
+		self->peak[ch] = 0;
+	}
+	self->channels = 0;
+	self->sample_rate = 0;
+	self->sample_size = 0;
+	self->sample_fmt = 0;
+	self->fragment = 0;
+	self->fragment_size = 0;
+	self->fragment_read = 0;
+	self->fragment_started = 0;
+}
+
+int meter_start(struct dr_meter *self, int channels, int sample_rate, int sample_fmt) {
+	// Allocate RMS and peak storage
+	for (int ch = 0; ch < channels; ch++) {
+		self->rms_values[ch] =
+			malloc(MAX_FRAGMENTS * sizeof(*self->rms_values[ch]));
+		self->peak_values[ch] =
+			malloc(MAX_FRAGMENTS * sizeof(*self->peak_values[ch]));
+		if (self->rms_values[ch] == NULL ||
+		    self->peak_values[ch] == NULL) {
+			return AVERROR(ENOMEM);
+		}
+	}
+	self->channels = channels;
+	self->sample_rate = sample_rate;
+	self->sample_fmt = sample_fmt;
+	self->sample_size = av_get_bytes_per_sample(sample_fmt);
+	self->fragment_size = ((long)sample_rate * FRAGMENT_LENGTH / 1000);
+	return 0;
+}
+
+static int meter_fragment_start(struct dr_meter *self) {
+	if (self->fragment >= MAX_FRAGMENTS) {
+		fprintf(stderr, "FATAL ERROR: Input too long! Max length %is.\n", MAX_FRAGMENTS*3);
+		return 240;
+	}
+
+	for (int ch = 0; ch < self->channels; ch++) {
+		self->sum[ch] = 0;
+		self->peak[ch] = 0;
+	}
+
+	self->fragment_read = 0;
+	self->fragment_started = true;
+
+	return 0;
+}
+
+static void meter_fragment_finish(struct dr_meter *self) {
+	for (int ch = 0; ch < self->channels; ch++) {
+		self->rms_values[ch][self->fragment] =
+			sqrt(2.0 * self->sum[ch] / self->fragment_read);
+		self->peak_values[ch][self->fragment] = self->peak[ch];
+	}
+	self->fragment++;
+	self->fragment_started = false;
+}
+
+static void meter_scan_internal(struct dr_meter *self, void *buf, size_t samples) {
+	for (size_t i = 0; i < samples; i++) {
+		for (int ch = 0; ch < self->channels; ch++) {
+			sample value = get_sample(buf, i * self->channels + ch, self->sample_fmt);
+			self->sum[ch] += value * value;
+
+			value = fabs(value);
+			if (self->peak[ch] < value) {
+				self->peak[ch] = value;
+			}
+		}
+	}
+}
+
+/* Feed the meter. Scan a single frame of audio. */
+int meter_feed(struct dr_meter *self, void *buf, size_t buf_size) {
+	size_t samples = buf_size / (self->sample_size * self->channels);
+	int err;
+
+	while (samples) {
+		if (!self->fragment_started) {
+			err = meter_fragment_start(self);
+			if (err) return err;
+		}
+
+		size_t fragment_left = self->fragment_size - self->fragment_read;
+		size_t to_scan = min(fragment_left, samples);
+		meter_scan_internal(self, buf, to_scan);
+		buf = (char *)buf + self->sample_size * self->channels * to_scan;
+		self->fragment_read += to_scan;
+
+		if (self->fragment_size <= self->fragment_read) {
+			meter_fragment_finish(self);
+		}
+
+		samples -= to_scan;
+	}
+
+	return 0;
+}
+
+int meter_finish(struct dr_meter *self) {
+	if (self->fragment_started) {
+		meter_fragment_finish(self);
+	}
+	fprintf(stderr, "\nDoing some statistics...\n");
+	sample rms_score[MAX_CHANNELS];
+	sample rms[MAX_CHANNELS];
+	sample peak_score[MAX_CHANNELS];
+	sample dr_channel[MAX_CHANNELS];
+	sample dr_sum = 0;
+	for (int ch = 0; ch < self->channels; ch++) {
+		qsort(self->rms_values[ch], self->fragment, sizeof(**self->rms_values), compare_samples);
+		sample rms_sum = 0;
+		size_t values_to_use = self->fragment / 5;
+		for (size_t i = 0; i < values_to_use; i++) {
+			sample value = self->rms_values[ch][i];
+			rms_sum += value * value;
+		}
+		rms_score[ch] = sqrt(rms_sum / values_to_use);
+
+		rms_sum = 0;
+		for (size_t i = 0; i < self->fragment; i++) {
+			sample value = self->rms_values[ch][i];
+			rms_sum += value * value;
+		}
+		rms[ch] = sqrt(rms_sum / self->fragment);
+
+		qsort(self->peak_values[ch], self->fragment, sizeof(*self->peak_values[ch]), compare_samples);
+		peak_score[ch] = self->peak_values[ch][min(1, self->fragment)];
+
+		dr_channel[ch] = to_db(peak_score[ch] / rms_score[ch]);
+		printf("Ch. %2i:  Peak %8.2f (%8.2f)   RMS %8.2f (%8.2f)   DR = %6.2f\n",
+		       ch,
+		       to_db(self->peak_values[ch][0]),
+		       to_db(peak_score[ch]),
+		       to_db(rms[ch]),
+		       to_db(rms_score[ch]),
+		       dr_channel[ch]);
+		dr_sum += dr_channel[ch];
+	}
+	printf("Overall dynamic range: DR%i\n",
+	       (int)round(dr_sum / ((sample)self->channels)));
+	return 0;
+}
+
+void meter_free(struct dr_meter *self) {
+	for (int ch = 0; ch < self->channels; ch++) {
+		free(self->rms_values[ch]);
+		free(self->peak_values[ch]);
+		self->rms_values[ch] = NULL;
+		self->peak_values[ch] = NULL;
+	}
+}
+
+/******************************************************************************/
+
 int print_av_error(const char *function_name, int error) {
 	char errorbuf[128];
 	char *error_ptr = errorbuf;
@@ -246,9 +424,11 @@ int print_av_error(const char *function_name, int error) {
 
 int do_calculate_dr(const char *filename) {
 	struct stream_context sc;
+	struct dr_meter meter;
 	void *buff = NULL;
-	int chan_num = 0;
 	int err;
+
+	meter_init(&meter);
 
 	err = sc_open(&sc, filename);
 	if (err < 0) { return print_av_error("sc_open", err); }
@@ -267,8 +447,7 @@ int do_calculate_dr(const char *filename) {
 	fprintf(stderr, "%.256s\n", codecinfobuf);
 
 	// Figure out the fragment size
-	chan_num = codec_ctx->channels;
-	const int sample_rate = codec_ctx->sample_rate;
+	const int chan_num = codec_ctx->channels;
 	const int sample_fmt = codec_ctx->sample_fmt;
 	const int sample_size = av_get_bytes_per_sample(sample_fmt);
 
@@ -288,61 +467,35 @@ int do_calculate_dr(const char *filename) {
 		goto cleanup;
 	}
 
-	const size_t buff_size = ((long)sample_rate * FRAGMENT_LENGTH / 1000) * sample_size * chan_num;
+	err = meter_start(&meter, codec_ctx->channels, codec_ctx->sample_rate, codec_ctx->sample_fmt);
+	if (err < 0) { goto cleanup; }
+
+	const size_t buff_size = meter.fragment_size * sample_size * chan_num;
 	assert(buff_size > 0);
 
 	// Allocate the buffer
 	buff = malloc(buff_size);
 	if (buff == NULL) { err = AVERROR(ENOMEM); goto cleanup; }
 
-	// Allocate RMS and peak storage
-	for (int ch = 0; ch < chan_num; ch++) {
-		rms_values[ch] = malloc(MAX_FRAGMENTS * sizeof(*rms_values[ch]));
-		peak_values[ch] = malloc(MAX_FRAGMENTS * sizeof(*rms_values[ch]));
-		if (rms_values[ch] == NULL || peak_values[ch] == NULL) {
-			err = AVERROR(ENOMEM);
-			goto cleanup;
-		}
-	}
+	fprintf(stderr, "Collecting fragments information...\n");
 
 	size_t fragment = 0;
 	int throbbler_stage = 0;
-	fprintf(stderr, "Collecting fragments information...\n");
 	while (!sc_eof(&sc)) {
-		if (fragment >= MAX_FRAGMENTS) {
-			fprintf(stderr, "FATAL ERROR: Input too long! Max length %is.\n", MAX_FRAGMENTS*3);
-			err = 240; // ???
-			goto cleanup;
-		}
 		ssize_t bytes_read = sc_read(&sc, buff, buff_size);
 		if (bytes_read < 0) {
 			err = bytes_read;
 			print_av_error("sc_read", err);
 			goto cleanup;
 		}
-		size_t values_read = (size_t)bytes_read / sample_size;
-		if (!values_read) { continue; }
-		assert(values_read % chan_num == 0);
 
-		sample sum[MAX_CHANNELS];
-		for (int ch = 0; ch < chan_num; ch++) {
-			sum[ch] = 0;
-			peak_values[ch][fragment] = 0;
-		}
-
-		for (size_t i = 0; i < values_read; /* look down */) {
-			for (int ch = 0; ch < chan_num; ch++, i++) {
-				sample value = get_sample(buff, i, sample_fmt);
-				sum[ch] += value * value;
-				value = fabs(value);
-				if (peak_values[ch][fragment] < value) {
-					peak_values[ch][fragment] = value;
-				}
+		if (bytes_read) {
+			err = meter_feed(&meter, buff, bytes_read);
+			if (err) {
+				goto cleanup;
 			}
 		}
-		for (int ch = 0; ch < chan_num; ch++) {
-			rms_values[ch][fragment] = sqrt(2.0 * sum[ch] / ((sample)(values_read / chan_num)));
-		}
+
 		fragment++;
 
 		if ((throbbler_stage % 4) == 0) {
@@ -355,56 +508,12 @@ int do_calculate_dr(const char *filename) {
 		throbbler_stage %= 16;
 	}
 
-	fprintf(stderr, "\nDoing some statistics...\n");
-	sample rms_score[MAX_CHANNELS];
-	sample rms[MAX_CHANNELS];
-	sample peak_score[MAX_CHANNELS];
-	sample dr_channel[MAX_CHANNELS];
-	sample dr_sum = 0;
-	for (int ch = 0; ch < chan_num; ch++) {
-		qsort(rms_values[ch], fragment, sizeof(**rms_values), compare_samples);
-		sample rms_sum = 0;
-		size_t values_to_use = fragment / 5;
-		for (size_t i = 0; i < values_to_use; i++) {
-			sample value = rms_values[ch][i];
-			rms_sum += value * value;
-		}
-		rms_score[ch] = sqrt(rms_sum / values_to_use);
-
-		rms_sum = 0;
-		for (size_t i = 0; i < fragment; i++) {
-			sample value = rms_values[ch][i];
-			rms_sum += value * value;
-		}
-		rms[ch] = sqrt(rms_sum / fragment);
-
-		qsort(peak_values[ch], fragment, sizeof(*peak_values[ch]), compare_samples);
-		peak_score[ch] = peak_values[ch][min(1, fragment)];
-
-		dr_channel[ch] = to_db(peak_score[ch] / rms_score[ch]);
-		printf("Ch. %2i:  Peak %8.2f (%8.2f)   RMS %8.2f (%8.2f)   DR = %6.2f\n",
-		       ch,
-		       to_db(peak_values[ch][0]),
-		       to_db(peak_score[ch]),
-		       to_db(rms[ch]),
-		       to_db(rms_score[ch]),
-		       dr_channel[ch]);
-		dr_sum += dr_channel[ch];
-	}
-	printf("Overall dynamic range: DR%i\n",
-	       (int)round(dr_sum / ((sample)chan_num)));
+	meter_finish(&meter);
 
 cleanup:
-	sc_close(&sc);
-
-	for (int ch = 0; ch < chan_num; ch++) {
-		free(rms_values[ch]);
-		free(peak_values[ch]);
-		rms_values[ch] = NULL;
-		peak_values[ch] = NULL;
-	}
-
 	free(buff);
+	meter_free(&meter);
+	sc_close(&sc);
 
 	if (err < 0) {
 		return err;
