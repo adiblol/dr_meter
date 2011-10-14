@@ -19,17 +19,6 @@
 #define FACTOR8 ((sample)1.0 / (sample)(1 << 7))
 #define FACTOR16 ((sample)1.0 / (sample)(1 << 15))
 #define FACTOR32 ((sample)1.0 / (sample)(1UL << 31))
-<<<<<<< HEAD
-
-#define min(a, b) ((a) < (b) ? (a) : (b))
-
-typedef double sample;
-
-const char throbbler[5] = "/-\\|";
-
-sample *rms_values[MAX_CHANNELS];
-sample *peak_values[MAX_CHANNELS];
-=======
 
 #define min(a, b) ((a) < (b) ? (a) : (b))
 
@@ -38,7 +27,6 @@ typedef double sample;
 const char throbbler[5] = "/-\\|";
 
 /******************************************************************************/
->>>>>>> magical/master
 
 struct stream_context {
 	AVFormatContext *format_ctx;
@@ -226,38 +214,6 @@ sample to_db(const sample linear) {
 	return 20.0 * log10(linear);
 }
 
-<<<<<<< HEAD
-/******************************************************************************/
-
-int compare_samples(const void *s1, const void *s2) {
-	sample rms1 = *(sample *)s1;
-	sample rms2 = *(sample *)s2;
-	if (rms1 > rms2) return -1;
-	else if (rms1 < rms2) return 1;
-	return 0;
-}
-
-sample get_sample(void *buf, size_t i, enum AVSampleFormat sample_fmt) {
-	switch(sample_fmt) {
-	case AV_SAMPLE_FMT_U8: return (sample)(((uint8_t *)buf)[i] - 0x80) * FACTOR8;
-	case AV_SAMPLE_FMT_S16: return (sample)(((int16_t *)buf)[i]) * FACTOR16;
-	case AV_SAMPLE_FMT_S32: return (sample)(((int32_t *)buf)[i]) * FACTOR32;
-	case AV_SAMPLE_FMT_FLT: return (sample)(((float *)buf)[i]);
-	case AV_SAMPLE_FMT_DBL: return (sample)(((double *)buf)[i]);
-	default: return 0.0;
-	}
-}
-
-sample to_db(const sample linear) {
-	return 20.0 * log10(linear);
-}
-
-int print_av_error(const char *function_name, int error) {
-	char errorbuf[128];
-	char *error_ptr = errorbuf;
-	if (av_strerror(error, errorbuf, sizeof(errorbuf)) < 0) {
-		error_ptr = strerror(AVUNERROR(error));
-=======
 void meter_init(struct dr_meter *self) {
 	for (int ch = 0; ch < MAX_CHANNELS; ch++) {
 		self->rms_values[ch] = NULL;
@@ -279,120 +235,8 @@ int meter_start(struct dr_meter *self, int channels, int sample_rate, int sample
 	if (channels > MAX_CHANNELS) {
 		fprintf(stderr, "FATAL ERROR: Too many channels! Max channels %is.\n", MAX_CHANNELS);
 		return 240; // ???
->>>>>>> magical/master
-	}
-	fprintf(stderr, "dr_meter: %s: %s\n", function_name, error_ptr);
-	return error;
-}
-
-<<<<<<< HEAD
-int do_calculate_dr(const char *filename) {
-	struct stream_context sc;
-	void *buff = NULL;
-	int chan_num = 0;
-	int err;
-
-	err = sc_open(&sc, filename);
-	if (err < 0) { return print_av_error("sc_open", err); }
-
-	int stream_index = err = av_find_best_stream(
-		sc.format_ctx, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
-	if (err < 0) { print_av_error("av_find_best_stream", err); goto cleanup; }
-
-	err = sc_start_stream(&sc, stream_index);
-	if (err < 0) { print_av_error("sc_start_stream", err); goto cleanup; }
-
-	// Print out the stream info
-	AVCodecContext *codec_ctx = sc_get_codec(&sc);
-	char codecinfobuf[256];
-	avcodec_string(codecinfobuf, sizeof(codecinfobuf), codec_ctx, 0);
-	fprintf(stderr, "%.256s\n", codecinfobuf);
-
-	// Figure out the fragment size
-	chan_num = codec_ctx->channels;
-	const int sample_rate = codec_ctx->sample_rate;
-	const int sample_fmt = codec_ctx->sample_fmt;
-	const int sample_size = av_get_bytes_per_sample(sample_fmt);
-
-	if (chan_num > MAX_CHANNELS) {
-		fprintf(stderr, "FATAL ERROR: Too many channels! Max channels %is.\n", MAX_CHANNELS);
-		err = 240; // ???
-		goto cleanup;
 	}
 
-	if (sample_fmt != AV_SAMPLE_FMT_U8 &&
-	    sample_fmt != AV_SAMPLE_FMT_S16 &&
-	    sample_fmt != AV_SAMPLE_FMT_S32 &&
-	    sample_fmt != AV_SAMPLE_FMT_FLT &&
-	    sample_fmt != AV_SAMPLE_FMT_DBL) {
-		fprintf(stderr, "FATAL ERROR: Unsupported sample format: %s\n", av_get_sample_fmt_name(sample_fmt));
-		err = 240;
-		goto cleanup;
-	}
-
-	const size_t buff_size = ((long)sample_rate * FRAGMENT_LENGTH / 1000) * sample_size * chan_num;
-	assert(buff_size > 0);
-
-	// Allocate the buffer
-	buff = malloc(buff_size);
-	if (buff == NULL) { err = AVERROR(ENOMEM); goto cleanup; }
-
-	// Allocate RMS and peak storage
-	for (int ch = 0; ch < chan_num; ch++) {
-		rms_values[ch] = malloc(MAX_FRAGMENTS * sizeof(*rms_values[ch]));
-		peak_values[ch] = malloc(MAX_FRAGMENTS * sizeof(*rms_values[ch]));
-		if (rms_values[ch] == NULL || peak_values[ch] == NULL) {
-			err = AVERROR(ENOMEM);
-			goto cleanup;
-		}
-	}
-
-	size_t fragment = 0;
-	int throbbler_stage = 0;
-	fprintf(stderr, "Collecting fragments information...\n");
-	while (!sc_eof(&sc)) {
-		if (fragment >= MAX_FRAGMENTS) {
-			fprintf(stderr, "FATAL ERROR: Input too long! Max length %is.\n", MAX_FRAGMENTS*3);
-			err = 240; // ???
-			goto cleanup;
-		}
-		ssize_t bytes_read = sc_read(&sc, buff, buff_size);
-		if (bytes_read < 0) {
-			err = bytes_read;
-			print_av_error("sc_read", err);
-			goto cleanup;
-		}
-		size_t values_read = (size_t)bytes_read / sample_size;
-		if (!values_read) { continue; }
-		assert(values_read % chan_num == 0);
-
-		sample sum[MAX_CHANNELS];
-		for (int ch = 0; ch < chan_num; ch++) {
-			sum[ch] = 0;
-			peak_values[ch][fragment] = 0;
-		}
-
-		for (size_t i = 0; i < values_read; /* look down */) {
-			for (int ch = 0; ch < chan_num; ch++, i++) {
-				sample value = get_sample(buff, i, sample_fmt);
-				sum[ch] += value * value;
-				value = fabs(value);
-				if (peak_values[ch][fragment] < value) {
-					peak_values[ch][fragment] = value;
-				}
-			}
-		}
-		for (int ch = 0; ch < chan_num; ch++) {
-			rms_values[ch][fragment] = sqrt(2.0 * sum[ch] / ((sample)(values_read / chan_num)));
-		}
-		fragment++;
-
-		if ((throbbler_stage % 4) == 0) {
-			fprintf(stderr, "\033[1K\033[1G %c  %2i:%02i ",
-			                throbbler[throbbler_stage / 4],
-			                (fragment * 3) / 60,
-			                (fragment * 3) % 60);
-=======
 	if (sample_fmt != AV_SAMPLE_FMT_U8 &&
 	    sample_fmt != AV_SAMPLE_FMT_S16 &&
 	    sample_fmt != AV_SAMPLE_FMT_S32 &&
@@ -492,7 +336,6 @@ int meter_feed(struct dr_meter *self, void *buf, size_t buf_size) {
 
 		if (self->fragment_size <= self->fragment_read) {
 			meter_fragment_finish(self);
->>>>>>> magical/master
 		}
 
 		samples -= to_scan;
@@ -511,36 +354,17 @@ int meter_finish(struct dr_meter *self) {
 	sample peak_score[MAX_CHANNELS];
 	sample dr_channel[MAX_CHANNELS];
 	sample dr_sum = 0;
-<<<<<<< HEAD
-	for (int ch = 0; ch < chan_num; ch++) {
-		qsort(rms_values[ch], fragment, sizeof(**rms_values), compare_samples);
-		sample rms_sum = 0;
-		size_t values_to_use = fragment / 5;
-		for (size_t i = 0; i < values_to_use; i++) {
-			sample value = rms_values[ch][i];
-=======
 	for (int ch = 0; ch < self->channels; ch++) {
 		qsort(self->rms_values[ch], self->fragment, sizeof(**self->rms_values), compare_samples);
 		sample rms_sum = 0;
 		size_t values_to_use = self->fragment / 5;
 		for (size_t i = 0; i < values_to_use; i++) {
 			sample value = self->rms_values[ch][i];
->>>>>>> magical/master
 			rms_sum += value * value;
 		}
 		rms_score[ch] = sqrt(rms_sum / values_to_use);
 
 		rms_sum = 0;
-<<<<<<< HEAD
-		for (size_t i = 0; i < fragment; i++) {
-			sample value = rms_values[ch][i];
-			rms_sum += value * value;
-		}
-		rms[ch] = sqrt(rms_sum / fragment);
-
-		qsort(peak_values[ch], fragment, sizeof(*peak_values[ch]), compare_samples);
-		peak_score[ch] = peak_values[ch][min(1, fragment)];
-=======
 		for (size_t i = 0; i < self->fragment; i++) {
 			sample value = self->rms_values[ch][i];
 			rms_sum += value * value;
@@ -549,16 +373,11 @@ int meter_finish(struct dr_meter *self) {
 
 		qsort(self->peak_values[ch], self->fragment, sizeof(*self->peak_values[ch]), compare_samples);
 		peak_score[ch] = self->peak_values[ch][min(1, self->fragment)];
->>>>>>> magical/master
 
 		dr_channel[ch] = to_db(peak_score[ch] / rms_score[ch]);
 		printf("Ch. %2i:  Peak %8.2f (%8.2f)   RMS %8.2f (%8.2f)   DR = %6.2f\n",
 		       ch,
-<<<<<<< HEAD
-		       to_db(peak_values[ch][0]),
-=======
 		       to_db(self->peak_values[ch][0]),
->>>>>>> magical/master
 		       to_db(peak_score[ch]),
 		       to_db(rms[ch]),
 		       to_db(rms_score[ch]),
@@ -649,22 +468,6 @@ int do_calculate_dr(const char *filename) {
 cleanup:
 	meter_free(&meter);
 	sc_close(&sc);
-
-	if (err < 0) {
-		return err;
-	}
-
-cleanup:
-	sc_close(&sc);
-
-	for (int ch = 0; ch < chan_num; ch++) {
-		free(rms_values[ch]);
-		free(peak_values[ch]);
-		rms_values[ch] = NULL;
-		peak_values[ch] = NULL;
-	}
-
-	free(buff);
 
 	if (err < 0) {
 		return err;
