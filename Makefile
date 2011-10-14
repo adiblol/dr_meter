@@ -2,8 +2,8 @@
 OBJ  = main.o
 LINKOBJ  = $(OBJ)
 BIN  = dr_meter
-CFLAGS = -O3 -ggdb -std=c99 -Wall -Wextra
-LDLIBS = -lm -lavformat
+CFLAGS = -O3 -ggdb -std=c99 -Wall -Wextra -Werror
+LDLIBS = -lm -lavformat -lavcodec -lavutil
 SOURCES = main.c
 OBJECTS = $(SOURCES:.c=.o)
 
