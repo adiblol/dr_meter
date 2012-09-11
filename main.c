@@ -77,7 +77,7 @@ AVCodecContext *sc_get_codec(struct stream_context *self) {
 void sc_close(struct stream_context *self) {
 	if (STATE_OPEN <= self->state && self->state != STATE_CLOSED) {
 		avcodec_close(sc_get_codec(self));
-		av_close_input_stream(self->format_ctx);
+		av_close_input_file(self->format_ctx);
 		self->state = STATE_CLOSED;
 	}
 }
