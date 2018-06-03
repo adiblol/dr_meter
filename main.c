@@ -21,6 +21,8 @@
 #define FACTOR32 ((sample)1.0 / (sample)(1UL << 31))
 
 #define min(a, b) ((a) < (b) ? (a) : (b))
+#define AVCODEC_MAX_AUDIO_FRAME_SIZE 192000 // 1 second of 48khz 32bit audio
+
 
 typedef double sample;
 
@@ -61,7 +63,7 @@ int sc_open(struct stream_context *self, const char *filename) {
 	sc_init(self);
 	err = avformat_open_input(&self->format_ctx, filename, NULL, NULL);
 	if (err < 0) { return err; }
-	err = av_find_stream_info(self->format_ctx);
+	err = avformat_find_stream_info(self->format_ctx, NULL);
 	if (err < 0) { return err; }
 
 	self->state = STATE_OPEN;
@@ -77,7 +79,7 @@ AVCodecContext *sc_get_codec(struct stream_context *self) {
 void sc_close(struct stream_context *self) {
 	if (STATE_OPEN <= self->state && self->state != STATE_CLOSED) {
 		avcodec_close(sc_get_codec(self));
-		av_close_input_stream(self->format_ctx);
+		avformat_close_input(self->format_ctx);
 		self->state = STATE_CLOSED;
 	}
 }
@@ -109,7 +111,7 @@ int sc_start_stream(struct stream_context *self, int stream_index) {
 	}
 
 	/* XXX check codec */
-	return avcodec_open(ctx, codec);
+	return avcodec_open2(ctx, codec, NULL);
 }
 
 // Decode one frame of audio
@@ -149,7 +151,7 @@ int sc_get_next_frame(struct stream_context *self) {
 	// The codec is not required to read the entire packet, so we may need
 	// to keep it around for a while.
 	int buf_size = self->buf_alloc_size;
-	err = avcodec_decode_audio3(codec_ctx, self->buf, &buf_size, &self->pkt);
+	err = avcodec_decode_audio4(codec_ctx, self->buf, &buf_size, &self->pkt);
 	if (err < 0) { return err; }
 	int bytes_used = err;
 
